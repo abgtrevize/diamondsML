@@ -1,0 +1,150 @@
+---
+title: "Final Project"
+author: "Ziad Abouchadi, Susann Almasi, Aditya Bindal, Jinesh Ramani"
+date: "December 11, 2015"
+output: 
+  pdf_document:
+    number_sections: true
+---
+
+```{r housekeeping, echo=FALSE, results='hide',warning=FALSE,message=FALSE}
+library(doParallel)
+library(gbm)
+library(randomForest)
+library(tree)
+library(ggplot2)
+library(gridExtra)
+library(data.table)
+library(Hmisc)
+library(caret)
+library(plyr)
+library(dplyr)
+library(tree)
+cl <- makeCluster(detectCores() - 2)   # create a compute cluster using all CPU cores but 2
+clusterEvalQ(cl, library(foreach))
+registerDoParallel(cl)   # register this cluster
+```
+
+# Introduction
+
+```{r import, echo=FALSE, results=FALSE, warning=FALSE}
+raw<-read.csv("./Data/2015-12-05.csv")
+```
+
+## Overview
+The market of retail diamonds is highly competitive. As dimaonds are a commodity, a variety of categorical and numerical variables influence their price. Companies in this space often use competitor prices as a benchmark when pricing diamonds. 
+
+As a new online retailer for diamonds, we will study the listed inventory of our competitors to improve our pricing and purchasing decisions. Specifically, we have two objectives:
+
+1. Predict the price of a diamond based on various factors to develop pricing formulas for our diamonds. This results from this model will help us ensure that our prices are competitive.
+2. Identify large clusters of diamonds in our competitors' inventory to determine our wholesale purchasing strategy. 
+
+To answer both of these questions, we will employ supervised and unsupervised learning techniques.
+
+## Data
+Using Ruby, we built scrapers to collect data on diamonds listed on [Brilliant Earth](https://www.brilliantearth.com/loose-diamonds/search), an online jewelry retailer. By identifying Brilliant Earth's XHR, we were able to access structured data on the retailer's inventory, yielding the following for each diamond:
+```JSON
+{"origin": "Botswana DTC", "symmetry": "Excellent", "suggestions":
+"1699301A\n0.30 Carat Round Diamond\n\n", "shipping_day": 6, "report": "GIA",
+"shape": "Round", "length_width_ratio": 1.0, "polish": "Very Good", "clarity":
+"SI2", "id": 1798962, "title_s": "0.30 Carat Round Diamond", "cut": "Ideal",
+"orderby_short": "2 PM PT monday", "title": "0.30 Carat Round Diamond",
+"clarity_order": 1, "measurements": "4.31 x 4.28 x 2.66", "carat": 0.3,
+"length": 4.295, "color": "E", "valid": true, "receiveby_short": "Tue, Dec 15",
+"supplier": "Dharm", "_version_": 1519620841350889475, "product_class_exact":
+"Loose Diamonds", "rap_percent": -47.0, "report_order": 4, "shipping_supplier":
+"Dharm", "price": 550, "collection": "", "price_exact": "550.0", "culet":
+"None", "active": true, "table": 59.0, "orderby": "Monday December 7, 2015 by
+2:00 PM PT", "color_order": 6, "fluorescence": "None", "girdle": "Medium -
+Slightly Thick", "cut_order": 5, "upc": "1699301A", "depth": 61.9, "is_memo":
+false, "be_price": 302.1, "receiveby": "Tuesday, December 15"}
+```
+By combining these JSON data, we created a clean dataset of `r` diamonds. Our data contain `r` factors, excluding attributes that we are not using (e.g., SKU ID, UPC etc.)
+
+Appendix B contains an sample of our input data. 
+
+[***Do we need anything else here? E.g., plotting missing data, histograms, summary stats?***]
+
+```{r cleaning, echo=FALSE, results=FALSE, warning=FALSE}
+raw$nlength = as.double(sapply(strsplit(as.character(raw$measurement)," x "),"[",1))
+raw$nwidth = as.double(sapply(strsplit(as.character(raw$measurement)," x "),"[",2))
+raw$nheight = as.double(sapply(strsplit(as.character(raw$measurement)," x "),"[",3))
+droplist<-c("title_s", "suggestions", "shipping_day", "id", "orderby_short", "title", "clarity_order", "measurements", "length", "valid", "receiveby_short", "_version_", "product_class_exact", "report_order", "price_exact", "active", "orderby", "color_order", "cut_order", "upc", "receiveby", "collection_order","be_price","shipping_supplier","supplier","X_version_")
+#Feel free to add some of these back in if you think they're potential factors for the models
+raw_clean<-as.data.table(raw[,!names(raw) %in% droplist])
+
+raw_clean$cut<-factor(raw_clean$cut,levels=c("Fair","Good","Very Good","Ideal","Super Ideal"))
+raw_clean$clarity<-factor(raw_clean$clarity,levels=c('SI2','SI1','VS2','VS1','VVS2','VVS1','IF','FL'))
+raw_clean$color<-factor(raw_clean$color,levels=rev(c('D','E','F','G','H','I','J')))
+raw_clean[symmetry=="Fa",symmetry:="Fair"]
+raw_clean$symmetry<-factor(raw_clean$symmetry,levels=c('Fair','Good','Very Good','Excellent'))
+raw_clean$polish<-factor(raw_clean$polish,levels=c('Fair','Good','Very Good','Excellent'))
+raw_clean$symmetry<-factor(raw_clean$symmetry,levels=c('Fair','Good','Very Good','Excellent'))
+raw_clean$fluorescence<-factor(raw_clean$fluorescence,levels=c('None','Very Slight','Slight','Faint','Medium','Medium Blue','Strong','Very Strong'))
+```
+# Predicting Price
+
+We will split our data into training, validation, and testing to run the supervised learning models below. As we mentioned earlier, our objective is predicting Brilliant Earth's price for each diamond to develop a competitive pricing strategy for our business. 
+
+```{r split, echo=FALSE, results=FALSE, warning=FALSE}
+train_proportion <- .8
+train_indices <- createDataPartition(
+  y=raw_clean$price,
+  p=train_proportion,
+  list=FALSE)
+train <- raw_clean[train_indices, ]
+test <- raw_clean[-train_indices, ]
+
+valid_proportion_of_train <- 0.2
+valid_indices <- createDataPartition(
+  y=train$price,
+  p=valid_proportion_of_train,
+  list=FALSE)
+
+val <- train[valid_indices, ]
+train <- train[-valid_indices, ]
+```
+Our train, val, and test datasets contain `r nrow(train)`, `r nrow(val)`, and `r nrow(test)` rows, respectively.
+
+```{r spltchck, echo=FALSE, results=TRUE, warning=FALSE}
+summary(train$price)
+summary(val$price)
+summary(test$price)
+```
+
+```{r xvrs, echo=FALSE, results=FALSE, warning=FALSE}
+xvars<-names(train)
+xvars[! xvars %in% c('price')]
+xvars<-c('cut','carat','clarity','color')
+```
+
+For each model, we will try and predict *price* using the following factors `r xvars`
+
+## KNN
+***Analogous to Boston Housing, we use 5-fold CV to predict price using KNN. Final prediction on test.***
+
+## Trees
+***As a bridge from KNN to RF/Boosting, we use a tree to predict price. When I tried this, carat made most of the breaks. Vinh suggested making deeper trees.***
+
+## Random Forests
+rf_model <- train(x=train[,xvars,with=FALSE],y=train$price,
+                  method='rf',
+                  ntree=B,     
+                  nodesize=25)
+## Boosting
+B <- 1200
+boost_model <- train(
+  x=train[, xvars, with=FALSE],
+  y=train$y_c,
+  method='gbm',       
+  tuneGrid=expand.grid(
+    n.trees=B,             
+    interaction.depth=5,   
+    n.minobsinnode=100,     
+    shrinkage=0.1))  
+
+# Finding Clusters
+
+## K-Means Clustering
+
+# Conclusion & Recommendations

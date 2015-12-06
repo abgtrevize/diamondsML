@@ -1,0 +1,7 @@
+housekeeping	clusterEvalQ	detectCores	library	makeCluster	registerDoParallel
+unnamed-chunk-1	prettify	print	toJSON
+cleaning	!	$	$<-	as.character	c	names	sapply	strsplit
+import	fread.csv
+fmt	options
+split	$	createDataPartition	raw
+spltchck	$	summary	test	train	val
